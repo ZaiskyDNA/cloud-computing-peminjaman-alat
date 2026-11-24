@@ -1,4 +1,4 @@
-% Diagram arsitektur — API Peminjaman Alat Laboratorium (Track C, Serverless)
+% Diagram arsitektur — API Peminjaman Alat Laboratorium (Track A, Cloud VM)
 % Kompilasi: pdflatex diagram-arsitektur.tex
 \documentclass[border=12pt]{standalone}
 \usepackage[scaled=0.92]{helvet}
@@ -13,89 +13,112 @@
     font=\small,
     >={Stealth[length=2.4mm]},
     svc/.style={draw, thick, rectangle, align=center,
-                minimum width=3.4cm, minimum height=1.9cm, fill=white},
+                minimum width=3.6cm, minimum height=2.1cm, fill=white},
     aux/.style={draw, rectangle, align=center,
                 minimum width=3.4cm, minimum height=1.3cm, fill=white},
+    igw/.style={draw, thick, rectangle, rounded corners=2pt, align=center,
+                minimum width=1.9cm, minimum height=1.3cm, fill=white},
     req/.style={->, thick},
     res/.style={->, thick, dashed},
     iam/.style={->, densely dotted, thick},
     lbl/.style={font=\scriptsize, align=center},
+    zone/.style={draw, rounded corners=3pt, inner sep=9pt},
+    sg/.style={draw, densely dashdotted, rounded corners=2pt, inner sep=5pt},
 ]
 
 % ------------------------------------------------------------------ komponen
-\node[svc] (client) at (-0.8,0)
+\node[svc] (client) at (-1.2,0)
   {\textbf{Klien}\\[2pt]\footnotesize curl / Postman /\\\footnotesize aplikasi web};
 
-\node[svc] (apigw) at (6.2,0)
-  {\textbf{Amazon API Gateway}\\[2pt]\footnotesize HTTP API \texttt{loans-api}\\
-   \footnotesize stage \texttt{\$default}};
+\node[igw] (igw) at (4.4,0)
+  {\textbf{Internet}\\\textbf{Gateway}\\\footnotesize\texttt{loans-igw}};
 
-\node[svc] (lambda) at (12.0,0)
-  {\textbf{AWS Lambda}\\[2pt]\footnotesize \texttt{loans-handler}\\
-   \footnotesize Python 3.12, 128 MB};
+\node[svc] (ec2) at (9.4,0)
+  {\textbf{Amazon EC2}\\[2pt]\footnotesize \texttt{loans-web}, t3.micro\\
+   \footnotesize Amazon Linux 2023\\\footnotesize Flask + PyMySQL :80};
 
-\node[svc] (ddb) at (17.8,0)
-  {\textbf{Amazon DynamoDB}\\[2pt]\footnotesize tabel \texttt{Loans}\\
-   \footnotesize PK: \texttt{loanId} (S)\\\footnotesize on-demand};
+\node[svc] (rds) at (16.4,0)
+  {\textbf{Amazon RDS}\\[2pt]\footnotesize MySQL 8.4, \texttt{loans-db}\\
+   \footnotesize db.t3.micro, Single-AZ\\\footnotesize database \texttt{loansdb}};
 
-\node[aux] (role) at (12.0,3.5)
-  {\textbf{IAM Role \texttt{LabRole}}\\\footnotesize execution role Lambda};
+\node[aux] (role) at (9.4,4.1)
+  {\textbf{IAM \texttt{LabInstanceProfile}}\\\footnotesize role \texttt{LabRole}};
 
-\node[aux] (cw) at (12.0,-3.5)
-  {\textbf{Amazon CloudWatch Logs}\\\footnotesize \texttt{/aws/lambda/loans-handler}};
+\node[aux] (ssm) at (16.4,4.1)
+  {\textbf{Systems Manager}\\\footnotesize Session Manager\\\footnotesize (akses shell admin)};
 
-% ------------------------------------------------------------ batas jaringan
+% ------------------------------------------------------- security group
+\node[sg, fit=(ec2)] (websg) {};
+\node[anchor=south west, font=\scriptsize\itshape] at (websg.north west)
+  {SG \texttt{loans-web-sg}: TCP 80 dari 0.0.0.0/0};
+\node[sg, fit=(rds)] (dbsg) {};
+\node[anchor=south west, font=\scriptsize\itshape] at (dbsg.north west)
+  {SG \texttt{loans-db-sg}: TCP 3306 hanya dari \texttt{loans-web-sg}};
+
+% ------------------------------------------------------------------ subnet
 \begin{scope}[on background layer]
-  \node[draw, thick, dashed, rounded corners=3pt, inner sep=10pt,
-        fit=(apigw)(lambda)(ddb)(role)(cw)] (aws) {};
+  \node[zone, fill=green!6, inner sep=16pt, fit=(websg)] (pub) {};
+  \node[zone, fill=blue!6, inner sep=16pt, fit=(dbsg)] (priv) {};
 \end{scope}
+\node[anchor=north west, font=\scriptsize, align=left] at (pub.north west)
+  {\textbf{Subnet publik} \texttt{loans-public-a}\\10.0.1.0/24, us-east-1a};
+\node[anchor=north west, font=\scriptsize, align=left] at (priv.north west)
+  {\textbf{Subnet privat} \texttt{loans-private-a/b}\\10.0.11.0/24 (1a), 10.0.12.0/24 (1b)};
+\node[anchor=south, font=\scriptsize, align=center] at (pub.south)
+  {route table: 0.0.0.0/0 $\rightarrow$ IGW};
+\node[anchor=south, font=\scriptsize, align=center] at (priv.south)
+  {tanpa rute ke internet; \textit{Public access: No}};
+
+% --------------------------------------------------------------------- VPC
+\begin{scope}[on background layer]
+  \node[draw, thick, rounded corners=3pt, inner sep=10pt,
+        fit=(pub)(priv)(igw)] (vpc) {};
+  \node[draw, thick, dashed, rounded corners=3pt, inner sep=12pt,
+        fit=(vpc)(role)(ssm)] (aws) {};
+\end{scope}
+\node[anchor=south east, font=\footnotesize\bfseries, align=right]
+  at (vpc.south east) {VPC \texttt{loans-vpc} 10.0.0.0/16\ };
 \node[anchor=north west, font=\footnotesize\bfseries, align=left]
   at ($(aws.north west)+(0.15,-0.1)$)
   {AWS Cloud --- region us-east-1\\
-   \mdseries\scriptsize akun AWS Academy Learner Lab};
+   \mdseries\scriptsize akun AWS Academy (Sandbox Environment)};
 
 \node[anchor=north, lbl] at ($(client.south)+(0,-0.35)$)
   {Internet publik};
 
 % ------------------------------------------------------------- alur request
-\draw[req] ($(client.east)+(0,0.3)$) -- node[above, lbl]{\langkah{1}\\HTTPS\\request JSON}
-           ($(apigw.west)+(0,0.3)$);
-\draw[req] ($(apigw.east)+(0,0.3)$) -- node[above, lbl]{\langkah{2}\\invoke\\payload v2.0}
-           ($(lambda.west)+(0,0.3)$);
-\draw[req] ($(lambda.east)+(0,0.3)$) -- node[above, lbl]{\langkah{3}\\SDK boto3\\(HTTPS)}
-           ($(ddb.west)+(0,0.3)$);
+\draw[req] ($(client.east)+(0,0.3)$) -- node[above, lbl]{\langkah{1}\\HTTP :80\\request JSON}
+           ($(igw.west)+(0,0.3)$);
+\draw[req] ($(igw.east)+(0,0.3)$) -- node[above, lbl]{\langkah{2}\\ke IP publik\\EC2}
+           ($(ec2.west)+(0,0.3)$);
+\draw[req] ($(ec2.east)+(0,0.3)$) -- node[above, lbl]{\langkah{3}\\query SQL\\TCP 3306 (privat)}
+           ($(rds.west)+(0,0.3)$);
 
 % ------------------------------------------------------------- alur respons
-\draw[res] ($(ddb.west)+(0,-0.3)$) -- node[below, lbl]{item / status\\\langkah{4}}
-           ($(lambda.east)+(0,-0.3)$);
-\draw[res] ($(lambda.west)+(0,-0.3)$) -- node[below, lbl]{statusCode\\+ body\\\langkah{5}}
-           ($(apigw.east)+(0,-0.3)$);
-\draw[res] ($(apigw.west)+(0,-0.3)$) -- node[below, lbl]{HTTP 200/201/204\\400/404\\\langkah{6}}
+\draw[res] ($(rds.west)+(0,-0.3)$) -- node[below, lbl]{baris data /\\rowcount\\\langkah{4}}
+           ($(ec2.east)+(0,-0.3)$);
+\draw[res] ($(ec2.west)+(0,-0.3)$) -- node[below, lbl]{respons\\JSON\\\langkah{5}}
+           ($(igw.east)+(0,-0.3)$);
+\draw[res] ($(igw.west)+(0,-0.3)$) -- node[below, lbl]{HTTP 200/201/204\\400/404\\\langkah{6}}
            ($(client.east)+(0,-0.3)$);
 
-
-% ------------------------------------------------------------ IAM & logging
-\draw[iam] (role.south) -- node[right, lbl, xshift=2pt]{assume role}
-           (lambda.north);
-\draw[iam] (role.east) -| node[pos=0.25, above, lbl]
-           {dynamodb:PutItem, GetItem,\\UpdateItem, DeleteItem, Scan}
-           (ddb.north);
-\draw[req] (lambda.south) -- node[right, lbl, xshift=2pt]{log eksekusi}
-           (cw.north);
-
-\node[lbl, anchor=south, text width=3.6cm]
-  at ($(apigw.north)+(0,0.25)$)
-  {\textit{resource policy:}\\ \texttt{lambda:InvokeFunction}\\
-   hanya dari API ini};
+% ------------------------------------------------------------ IAM & admin
+\draw[iam] (role.south) -- node[right, lbl, xshift=2pt]{instance profile\\(kredensial sementara)}
+           (websg.north);
+\draw[iam] (ssm.west) -- node[above, lbl]{izin \texttt{ssm:*} dari \texttt{LabRole}} (role.east);
+\draw[iam] (ssm.south) .. controls +(0,-1.2) and +(1.4,1.2) .. node[pos=0.55, right, lbl, xshift=2pt]
+           {shell tanpa\\port SSH} (websg.north east);
 
 % ------------------------------------------------------------------ legenda
 \node[anchor=north west, font=\scriptsize, align=left]
   (legend) at ($(aws.south west)+(0,-0.35)$) {%
   \tikz[baseline=-0.5ex]\draw[req] (0,0)--(0.8,0);\ request \quad
   \tikz[baseline=-0.5ex]\draw[res] (0,0)--(0.8,0);\ respons \quad
-  \tikz[baseline=-0.5ex]\draw[iam] (0,0)--(0.8,0);\ izin IAM \quad
+  \tikz[baseline=-0.5ex]\draw[iam] (0,0)--(0.8,0);\ IAM / akses admin \quad
+  \tikz[baseline=-0.5ex]\draw[densely dashdotted, rounded corners=1pt] (0,-0.12) rectangle (0.8,0.12);\
+  security group \quad
   \tikz[baseline=-0.5ex]\draw[dashed, thick, rounded corners=1pt] (0,-0.12) rectangle (0.8,0.12);\
-  batas akun AWS (tanpa VPC kustom; semua layanan dikelola AWS)};
+  batas akun AWS};
 
 \end{tikzpicture}
 \end{document}
