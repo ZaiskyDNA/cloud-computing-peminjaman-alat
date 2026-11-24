@@ -1,0 +1,101 @@
+% Diagram arsitektur — API Peminjaman Alat Laboratorium (Track C, Serverless)
+% Kompilasi: pdflatex diagram-arsitektur.tex
+\documentclass[border=12pt]{standalone}
+\usepackage[scaled=0.92]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc}
+\newcommand{\langkah}[1]{\tikz[baseline=(n.base)]\node[circle, draw, solid, thin,
+  inner sep=0.6pt, minimum size=3.6mm, font=\tiny\bfseries] (n) {#1};}
+
+\begin{document}
+\begin{tikzpicture}[
+    font=\small,
+    >={Stealth[length=2.4mm]},
+    svc/.style={draw, thick, rectangle, align=center,
+                minimum width=3.4cm, minimum height=1.9cm, fill=white},
+    aux/.style={draw, rectangle, align=center,
+                minimum width=3.4cm, minimum height=1.3cm, fill=white},
+    req/.style={->, thick},
+    res/.style={->, thick, dashed},
+    iam/.style={->, densely dotted, thick},
+    lbl/.style={font=\scriptsize, align=center},
+]
+
+% ------------------------------------------------------------------ komponen
+\node[svc] (client) at (-0.8,0)
+  {\textbf{Klien}\\[2pt]\footnotesize curl / Postman /\\\footnotesize aplikasi web};
+
+\node[svc] (apigw) at (6.2,0)
+  {\textbf{Amazon API Gateway}\\[2pt]\footnotesize HTTP API \texttt{loans-api}\\
+   \footnotesize stage \texttt{\$default}};
+
+\node[svc] (lambda) at (12.0,0)
+  {\textbf{AWS Lambda}\\[2pt]\footnotesize \texttt{loans-handler}\\
+   \footnotesize Python 3.12, 128 MB};
+
+\node[svc] (ddb) at (17.8,0)
+  {\textbf{Amazon DynamoDB}\\[2pt]\footnotesize tabel \texttt{Loans}\\
+   \footnotesize PK: \texttt{loanId} (S)\\\footnotesize on-demand};
+
+\node[aux] (role) at (12.0,3.5)
+  {\textbf{IAM Role \texttt{LabRole}}\\\footnotesize execution role Lambda};
+
+\node[aux] (cw) at (12.0,-3.5)
+  {\textbf{Amazon CloudWatch Logs}\\\footnotesize \texttt{/aws/lambda/loans-handler}};
+
+% ------------------------------------------------------------ batas jaringan
+\begin{scope}[on background layer]
+  \node[draw, thick, dashed, rounded corners=3pt, inner sep=10pt,
+        fit=(apigw)(lambda)(ddb)(role)(cw)] (aws) {};
+\end{scope}
+\node[anchor=north west, font=\footnotesize\bfseries, align=left]
+  at ($(aws.north west)+(0.15,-0.1)$)
+  {AWS Cloud --- region us-east-1\\
+   \mdseries\scriptsize akun AWS Academy Learner Lab};
+
+\node[anchor=north, lbl] at ($(client.south)+(0,-0.35)$)
+  {Internet publik};
+
+% ------------------------------------------------------------- alur request
+\draw[req] ($(client.east)+(0,0.3)$) -- node[above, lbl]{\langkah{1}\\HTTPS\\request JSON}
+           ($(apigw.west)+(0,0.3)$);
+\draw[req] ($(apigw.east)+(0,0.3)$) -- node[above, lbl]{\langkah{2}\\invoke\\payload v2.0}
+           ($(lambda.west)+(0,0.3)$);
+\draw[req] ($(lambda.east)+(0,0.3)$) -- node[above, lbl]{\langkah{3}\\SDK boto3\\(HTTPS)}
+           ($(ddb.west)+(0,0.3)$);
+
+% ------------------------------------------------------------- alur respons
+\draw[res] ($(ddb.west)+(0,-0.3)$) -- node[below, lbl]{item / status\\\langkah{4}}
+           ($(lambda.east)+(0,-0.3)$);
+\draw[res] ($(lambda.west)+(0,-0.3)$) -- node[below, lbl]{statusCode\\+ body\\\langkah{5}}
+           ($(apigw.east)+(0,-0.3)$);
+\draw[res] ($(apigw.west)+(0,-0.3)$) -- node[below, lbl]{HTTP 200/201/204\\400/404\\\langkah{6}}
+           ($(client.east)+(0,-0.3)$);
+
+
+% ------------------------------------------------------------ IAM & logging
+\draw[iam] (role.south) -- node[right, lbl, xshift=2pt]{assume role}
+           (lambda.north);
+\draw[iam] (role.east) -| node[pos=0.25, above, lbl]
+           {dynamodb:PutItem, GetItem,\\UpdateItem, DeleteItem, Scan}
+           (ddb.north);
+\draw[req] (lambda.south) -- node[right, lbl, xshift=2pt]{log eksekusi}
+           (cw.north);
+
+\node[lbl, anchor=south, text width=3.6cm]
+  at ($(apigw.north)+(0,0.25)$)
+  {\textit{resource policy:}\\ \texttt{lambda:InvokeFunction}\\
+   hanya dari API ini};
+
+% ------------------------------------------------------------------ legenda
+\node[anchor=north west, font=\scriptsize, align=left]
+  (legend) at ($(aws.south west)+(0,-0.35)$) {%
+  \tikz[baseline=-0.5ex]\draw[req] (0,0)--(0.8,0);\ request \quad
+  \tikz[baseline=-0.5ex]\draw[res] (0,0)--(0.8,0);\ respons \quad
+  \tikz[baseline=-0.5ex]\draw[iam] (0,0)--(0.8,0);\ izin IAM \quad
+  \tikz[baseline=-0.5ex]\draw[dashed, thick, rounded corners=1pt] (0,-0.12) rectangle (0.8,0.12);\
+  batas akun AWS (tanpa VPC kustom; semua layanan dikelola AWS)};
+
+\end{tikzpicture}
+\end{document}
