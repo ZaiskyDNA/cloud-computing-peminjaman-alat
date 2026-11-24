@@ -33,51 +33,51 @@
 \node[igw] (igw) at (4.4,0)
   {\textbf{Internet}\\\textbf{Gateway}\\\footnotesize\texttt{loans-igw}};
 
-\node[svc] (ec2) at (9.4,0)
+\node[svc] (ec2) at (9.6,0)
   {\textbf{Amazon EC2}\\[2pt]\footnotesize \texttt{loans-web}, t3.micro\\
    \footnotesize Amazon Linux 2023\\\footnotesize Flask + PyMySQL :80};
 
-\node[svc] (rds) at (16.4,0)
+\node[svc] (rds) at (17.6,0)
   {\textbf{Amazon RDS}\\[2pt]\footnotesize MySQL 8.4, \texttt{loans-db}\\
    \footnotesize db.t3.micro, Single-AZ\\\footnotesize database \texttt{loansdb}};
 
-\node[aux] (role) at (9.4,4.1)
-  {\textbf{IAM \texttt{LabInstanceProfile}}\\\footnotesize role \texttt{LabRole}};
-
-\node[aux] (ssm) at (16.4,4.1)
-  {\textbf{Systems Manager}\\\footnotesize Session Manager\\\footnotesize (akses shell admin)};
-
 % ------------------------------------------------------- security group
-\node[sg, fit=(ec2)] (websg) {};
-\node[anchor=south west, font=\scriptsize\itshape] at (websg.north west)
-  {SG \texttt{loans-web-sg}: TCP 80 dari 0.0.0.0/0};
-\node[sg, fit=(rds)] (dbsg) {};
-\node[anchor=south west, font=\scriptsize\itshape] at (dbsg.north west)
-  {SG \texttt{loans-db-sg}: TCP 3306 hanya dari \texttt{loans-web-sg}};
+\node[anchor=north, lbl, font=\scriptsize\itshape] (webl) at ($(ec2.south)+(0,-0.12)$)
+  {SG \texttt{loans-web-sg}\\TCP 80 dari 0.0.0.0/0};
+\node[sg, fit=(ec2)(webl)] (websg) {};
+\node[anchor=north, lbl, font=\scriptsize\itshape] (dbl) at ($(rds.south)+(0,-0.12)$)
+  {SG \texttt{loans-db-sg}\\TCP 3306 hanya dari \texttt{loans-web-sg}};
+\node[sg, fit=(rds)(dbl)] (dbsg) {};
 
 % ------------------------------------------------------------------ subnet
-\begin{scope}[on background layer]
-  \node[zone, fill=green!6, inner sep=16pt, fit=(websg)] (pub) {};
-  \node[zone, fill=blue!6, inner sep=16pt, fit=(dbsg)] (priv) {};
-\end{scope}
-\node[anchor=north west, font=\scriptsize, align=left] at (pub.north west)
+\node[anchor=north, font=\scriptsize, align=center] (pubt) at ($(websg.south)+(0,-0.15)$)
   {\textbf{Subnet publik} \texttt{loans-public-a}\\10.0.1.0/24, us-east-1a};
-\node[anchor=north west, font=\scriptsize, align=left] at (priv.north west)
-  {\textbf{Subnet privat} \texttt{loans-private-a/b}\\10.0.11.0/24 (1a), 10.0.12.0/24 (1b)};
-\node[anchor=south, font=\scriptsize, align=center] at (pub.south)
+\node[anchor=north, font=\scriptsize, align=center] (pubf) at ($(pubt.south)+(0,-0.05)$)
   {route table: 0.0.0.0/0 $\rightarrow$ IGW};
-\node[anchor=south, font=\scriptsize, align=center] at (priv.south)
+\node[anchor=north, font=\scriptsize, align=center] (privt) at ($(dbsg.south)+(0,-0.15)$)
+  {\textbf{Subnet privat} \texttt{loans-private-a/b}\\10.0.11.0/24 (1a), 10.0.12.0/24 (1b)};
+\node[anchor=north, font=\scriptsize, align=center] (privf) at ($(privt.south)+(0,-0.05)$)
   {tanpa rute ke internet; \textit{Public access: No}};
+\begin{scope}[on background layer]
+  \node[zone, fit=(websg)(pubt)(pubf)] (pub) {};
+  \node[zone, fit=(dbsg)(privt)(privf)] (priv) {};
+\end{scope}
+
+% ------------------------------------------------------------ IAM & admin
+\node[aux] (role) at (9.6,4.4)
+  {\textbf{IAM \texttt{LabInstanceProfile}}\\\footnotesize role \texttt{LabRole}};
+\node[aux] (ssm) at (15.8,4.4)
+  {\textbf{Systems Manager}\\\footnotesize Session Manager\\\footnotesize (akses shell admin)};
 
 % --------------------------------------------------------------------- VPC
 \begin{scope}[on background layer]
-  \node[draw, thick, rounded corners=3pt, inner sep=10pt,
+  \node[draw, thick, rounded corners=3pt, inner sep=10pt, inner ysep=17pt,
         fit=(pub)(priv)(igw)] (vpc) {};
   \node[draw, thick, dashed, rounded corners=3pt, inner sep=12pt,
         fit=(vpc)(role)(ssm)] (aws) {};
 \end{scope}
-\node[anchor=south east, font=\footnotesize\bfseries, align=right]
-  at (vpc.south east) {VPC \texttt{loans-vpc} 10.0.0.0/16\ };
+\node[anchor=north east, font=\footnotesize\bfseries, align=right]
+  at ($(vpc.north east)+(-0.15,-0.1)$) {VPC \texttt{loans-vpc} 10.0.0.0/16};
 \node[anchor=north west, font=\footnotesize\bfseries, align=left]
   at ($(aws.north west)+(0.15,-0.1)$)
   {AWS Cloud --- region us-east-1\\
@@ -103,11 +103,11 @@
            ($(client.east)+(0,-0.3)$);
 
 % ------------------------------------------------------------ IAM & admin
-\draw[iam] (role.south) -- node[right, lbl, xshift=2pt]{instance profile\\(kredensial sementara)}
+\draw[iam] (role.south) -- node[left, lbl, xshift=-2pt]{instance profile\\(kredensial sementara)}
            (websg.north);
-\draw[iam] (ssm.west) -- node[above, lbl]{izin \texttt{ssm:*} dari \texttt{LabRole}} (role.east);
-\draw[iam] (ssm.south) .. controls +(0,-1.2) and +(1.4,1.2) .. node[pos=0.55, right, lbl, xshift=2pt]
-           {shell tanpa\\port SSH} (websg.north east);
+\draw[iam] (ssm.west) -- node[above, lbl]{izin dari \texttt{LabRole}} (role.east);
+\draw[iam] (ssm.south) -- ++(0,-1.0) -| node[pos=0.25, below, lbl]{shell tanpa port SSH}
+           ($(websg.north east)+(-0.5,0)$);
 
 % ------------------------------------------------------------------ legenda
 \node[anchor=north west, font=\scriptsize, align=left]
