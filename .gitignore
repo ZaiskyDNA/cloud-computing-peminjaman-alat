@@ -1,5 +1,6 @@
 build/
 .api_url
+.state
 __pycache__/
 .pytest_cache/
 *.pyc
