@@ -1,0 +1,34 @@
+Smoke test API Peminjaman Alat
+Endpoint : http://18.234.131.83
+Waktu    : 2026-11-24 13:51:43 UTC
+
+$ curl -X GET http://18.234.131.83/health
+  HTTP 200
+  {"status": "ok", "database": "connected", "version": "8.4.11", "db_time": "2026-11-24 13:51:43"}
+
+$ curl -X POST http://18.234.131.83/loans
+  body: {"equipmentName":"Osiloskop Rigol DS1054Z","borrowerName":"Budi Santoso","borrowerId":"512345","loanDate":"2026-11-24","dueDate":"2026-11-27"}
+  HTTP 201
+  {"loanId": "fd737e09-458a-40ad-babc-60e242bbb501", "equipmentName": "Osiloskop Rigol DS1054Z", "borrowerName": "Budi Santoso", "borrowerId": "512345", "loanDate": "2026-11-24", "dueDate": "2026-11-27", "status": "DIPINJAM", "createdAt": "2026-11-24T13:51:43+00:00", "updatedAt": "2026-11-24T13:51:43+00:00"}
+
+$ curl -X GET http://18.234.131.83/loans/fd737e09-458a-40ad-babc-60e242bbb501
+  HTTP 200
+  {"loanId": "fd737e09-458a-40ad-babc-60e242bbb501", "equipmentName": "Osiloskop Rigol DS1054Z", "borrowerName": "Budi Santoso", "borrowerId": "512345", "loanDate": "2026-11-24", "dueDate": "2026-11-27", "status": "DIPINJAM", "createdAt": "2026-11-24T13:51:43+00:00", "updatedAt": "2026-11-24T13:51:43+00:00"}
+
+$ curl -X PUT http://18.234.131.83/loans/fd737e09-458a-40ad-babc-60e242bbb501
+  body: {"status":"DIKEMBALIKAN"}
+  HTTP 200
+  {"loanId": "fd737e09-458a-40ad-babc-60e242bbb501", "equipmentName": "Osiloskop Rigol DS1054Z", "borrowerName": "Budi Santoso", "borrowerId": "512345", "loanDate": "2026-11-24", "dueDate": "2026-11-27", "status": "DIKEMBALIKAN", "createdAt": "2026-11-24T13:51:43+00:00", "updatedAt": "2026-11-24T13:51:44+00:00"}
+
+$ curl -X GET http://18.234.131.83/loans
+  HTTP 200
+  {"count": 1, "items": [{"loanId": "fd737e09-458a-40ad-babc-60e242bbb501", "equipmentName": "Osiloskop Rigol DS1054Z", "borrowerName": "Budi Santoso", "borrowerId": "512345", "loanDate": "2026-11-24", "dueDate": "2026-11-27", "status": "DIKEMBALIKAN", "createdAt": "2026-11-24T13:51:43+00:00", "updatedAt": "2026-11-24T13:51:44+00:00"}]}
+
+$ curl -X DELETE http://18.234.131.83/loans/fd737e09-458a-40ad-babc-60e242bbb501
+  HTTP 204
+
+$ curl -X GET http://18.234.131.83/loans/fd737e09-458a-40ad-babc-60e242bbb501
+  HTTP 404
+  {"message": "Peminjaman fd737e09-458a-40ad-babc-60e242bbb501 tidak ditemukan"}
+
+Selesai. Hasil tersimpan di evidence/smoke-test-output.txt
