@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Menguji kelima route melalui API Gateway dan menyimpan hasilnya ke
+# Menguji endpoint API di EC2 (yang terhubung ke RDS) dan menyimpan hasilnya ke
 # evidence/smoke-test-output.txt sebagai bukti konektivitas.
 #
 #   bash scripts/smoke_test.sh [URL_API]
@@ -39,6 +39,7 @@ log "Smoke test API Peminjaman Alat"
 log "Endpoint : $API_URL"
 log "Waktu    : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
+request GET /health
 request POST /loans '{"equipmentName":"Osiloskop Rigol DS1054Z","borrowerName":"Budi Santoso","borrowerId":"512345","loanDate":"2026-11-24","dueDate":"2026-11-27"}'
 LOAN_ID=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["loanId"])' "$BODY")
 

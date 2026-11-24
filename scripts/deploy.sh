@@ -1,100 +1,162 @@
 #!/usr/bin/env bash
-# Membuat (atau memperbarui) seluruh resource: DynamoDB, Lambda, API Gateway.
-# Jalankan dari root repo, di AWS CloudShell atau terminal yang sudah diisi
-# kredensial dari menu "AWS Details" Learner Lab.
+# Track A (Cloud VM): membuat VPC, security group, RDS MySQL, dan EC2 yang
+# menjalankan API Flask. Jalankan dari root repo di terminal Learner Lab /
+# Sandbox / CloudShell (region us-east-1).
 #
 #   bash scripts/deploy.sh
 #
-# Skrip ini aman dijalankan berulang: resource yang sudah ada tidak dibuat ulang.
+# Nilai yang dibuat disimpan di .state agar skrip aman dijalankan ulang.
 
 set -euo pipefail
+export AWS_DEFAULT_REGION="${AWS_REGION:-us-east-1}"
+export AWS_PAGER=""
 
-REGION="${AWS_REGION:-us-east-1}"
-TABLE="Loans"
-FUNC="loans-handler"
-API_NAME="loans-api"
-ROUTES=("POST /loans" "GET /loans" "GET /loans/{loanId}" "PUT /loans/{loanId}" "DELETE /loans/{loanId}")
+P=loans
+STATE=.state
+touch "$STATE"; chmod 600 "$STATE"
+# shellcheck disable=SC1090
+source "$STATE"
+save() { echo "$1=$2" >> "$STATE"; eval "$1=$2"; }
+tag() { echo "ResourceType=$1,Tags=[{Key=Name,Value=$2},{Key=Project,Value=$P}]"; }
 
-export AWS_DEFAULT_REGION="$REGION"
+AZ1="${AWS_DEFAULT_REGION}a"; AZ2="${AWS_DEFAULT_REGION}b"
 
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-# Learner Lab tidak mengizinkan pembuatan IAM role baru, jadi dipakai LabRole.
-ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/LabRole"
-echo "Akun: $ACCOUNT_ID | Region: $REGION | Role: $ROLE_ARN"
+# ------------------------------------------------------------------ jaringan
+if [[ -z "${VPC_ID:-}" ]]; then
+  echo "[vpc] Membuat VPC 10.0.0.0/16"
+  save VPC_ID "$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 \
+    --tag-specifications "$(tag vpc $P-vpc)" --query Vpc.VpcId --output text)"
+  aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-hostnames
+  aws ec2 wait vpc-available --vpc-ids "$VPC_ID"
 
-# ------------------------------------------------------------------ DynamoDB
-if aws dynamodb describe-table --table-name "$TABLE" >/dev/null 2>&1; then
-  echo "[dynamodb] Tabel $TABLE sudah ada"
-else
-  echo "[dynamodb] Membuat tabel $TABLE (on-demand)"
-  aws dynamodb create-table \
-    --table-name "$TABLE" \
-    --attribute-definitions AttributeName=loanId,AttributeType=S \
-    --key-schema AttributeName=loanId,KeyType=HASH \
-    --billing-mode PAY_PER_REQUEST >/dev/null
-  aws dynamodb wait table-exists --table-name "$TABLE"
+  save IGW_ID "$(aws ec2 create-internet-gateway \
+    --tag-specifications "$(tag internet-gateway $P-igw)" \
+    --query InternetGateway.InternetGatewayId --output text)"
+  aws ec2 attach-internet-gateway --vpc-id "$VPC_ID" --internet-gateway-id "$IGW_ID"
+
+  mk_subnet() {  # nama cidr az
+    aws ec2 create-subnet --vpc-id "$VPC_ID" --cidr-block "$2" --availability-zone "$3" \
+      --tag-specifications "$(tag subnet "$1")" --query Subnet.SubnetId --output text
+  }
+  save PUB_SUBNET "$(mk_subnet $P-public-a 10.0.1.0/24 "$AZ1")"
+  save PRIV_SUBNET_A "$(mk_subnet $P-private-a 10.0.11.0/24 "$AZ1")"
+  save PRIV_SUBNET_B "$(mk_subnet $P-private-b 10.0.12.0/24 "$AZ2")"
+  aws ec2 modify-subnet-attribute --subnet-id "$PUB_SUBNET" --map-public-ip-on-launch
+
+  save RT_ID "$(aws ec2 create-route-table --vpc-id "$VPC_ID" \
+    --tag-specifications "$(tag route-table $P-public-rt)" \
+    --query RouteTable.RouteTableId --output text)"
+  aws ec2 create-route --route-table-id "$RT_ID" --destination-cidr-block 0.0.0.0/0 \
+    --gateway-id "$IGW_ID" >/dev/null
+  aws ec2 associate-route-table --route-table-id "$RT_ID" --subnet-id "$PUB_SUBNET" >/dev/null
+  echo "[vpc] $VPC_ID: 1 subnet publik, 2 subnet privat"
 fi
 
-# -------------------------------------------------------------------- Lambda
-mkdir -p build
-rm -f build/function.zip
-(cd src && zip -q ../build/function.zip handler.py)
+if [[ -z "${WEB_SG:-}" ]]; then
+  save WEB_SG "$(aws ec2 create-security-group --vpc-id "$VPC_ID" --group-name $P-web-sg \
+    --description "HTTP publik ke API" --query GroupId --output text)"
+  aws ec2 authorize-security-group-ingress --group-id "$WEB_SG" \
+    --protocol tcp --port 80 --cidr 0.0.0.0/0 >/dev/null
 
-if aws lambda get-function --function-name "$FUNC" >/dev/null 2>&1; then
-  echo "[lambda] Memperbarui kode $FUNC"
-  aws lambda update-function-code --function-name "$FUNC" \
-    --zip-file fileb://build/function.zip >/dev/null
-else
-  echo "[lambda] Membuat fungsi $FUNC"
-  aws lambda create-function \
-    --function-name "$FUNC" \
-    --runtime python3.12 \
-    --handler handler.lambda_handler \
-    --role "$ROLE_ARN" \
-    --zip-file fileb://build/function.zip \
-    --memory-size 128 \
-    --timeout 10 \
-    --environment "Variables={TABLE_NAME=$TABLE}" >/dev/null
-fi
-aws lambda wait function-active-v2 --function-name "$FUNC"
-FUNC_ARN=$(aws lambda get-function --function-name "$FUNC" --query Configuration.FunctionArn --output text)
-
-# --------------------------------------------------------------- API Gateway
-API_ID=$(aws apigatewayv2 get-apis --query "Items[?Name=='$API_NAME'].ApiId | [0]" --output text)
-
-if [[ "$API_ID" == "None" || -z "$API_ID" ]]; then
-  echo "[apigateway] Membuat HTTP API $API_NAME"
-  API_ID=$(aws apigatewayv2 create-api --name "$API_NAME" --protocol-type HTTP \
-    --query ApiId --output text)
-
-  INTEGRATION_ID=$(aws apigatewayv2 create-integration \
-    --api-id "$API_ID" \
-    --integration-type AWS_PROXY \
-    --integration-uri "$FUNC_ARN" \
-    --payload-format-version 2.0 \
-    --query IntegrationId --output text)
-
-  for route in "${ROUTES[@]}"; do
-    aws apigatewayv2 create-route --api-id "$API_ID" \
-      --route-key "$route" --target "integrations/$INTEGRATION_ID" >/dev/null
-    echo "[apigateway] Route dibuat: $route"
-  done
-
-  aws apigatewayv2 create-stage --api-id "$API_ID" \
-    --stage-name '$default' --auto-deploy >/dev/null
-
-  aws lambda add-permission \
-    --function-name "$FUNC" \
-    --statement-id apigateway-invoke \
-    --action lambda:InvokeFunction \
-    --principal apigateway.amazonaws.com \
-    --source-arn "arn:aws:execute-api:${REGION}:${ACCOUNT_ID}:${API_ID}/*/*" >/dev/null
-else
-  echo "[apigateway] API $API_NAME sudah ada ($API_ID)"
+  save DB_SG "$(aws ec2 create-security-group --vpc-id "$VPC_ID" --group-name $P-db-sg \
+    --description "MySQL hanya dari web-sg" --query GroupId --output text)"
+  aws ec2 authorize-security-group-ingress --group-id "$DB_SG" \
+    --protocol tcp --port 3306 --source-group "$WEB_SG" >/dev/null
+  echo "[sg] web-sg $WEB_SG (80 dari internet), db-sg $DB_SG (3306 dari web-sg)"
 fi
 
-API_URL="https://${API_ID}.execute-api.${REGION}.amazonaws.com"
+# ----------------------------------------------------------------------- RDS
+if [[ -z "${DB_PASSWORD:-}" ]]; then
+  save DB_PASSWORD "$(openssl rand -hex 16)"
+fi
+
+if ! aws rds describe-db-instances --db-instance-identifier $P-db >/dev/null 2>&1; then
+  aws rds create-db-subnet-group --db-subnet-group-name $P-db-subnets \
+    --db-subnet-group-description "Subnet privat RDS" \
+    --subnet-ids "$PRIV_SUBNET_A" "$PRIV_SUBNET_B" >/dev/null 2>&1 || true
+  echo "[rds] Membuat MySQL db.t3.micro (5-10 menit)"
+  aws rds create-db-instance \
+    --db-instance-identifier $P-db \
+    --engine mysql \
+    --db-instance-class db.t3.micro \
+    --allocated-storage 20 --storage-type gp2 \
+    --master-username admin --master-user-password "$DB_PASSWORD" \
+    --db-name loansdb \
+    --db-subnet-group-name $P-db-subnets \
+    --vpc-security-group-ids "$DB_SG" \
+    --no-publicly-accessible --no-multi-az \
+    --backup-retention-period 0 --monitoring-interval 0 \
+    --tags Key=Project,Value=$P >/dev/null
+fi
+aws rds wait db-instance-available --db-instance-identifier $P-db
+DB_HOST=$(aws rds describe-db-instances --db-instance-identifier $P-db \
+  --query 'DBInstances[0].Endpoint.Address' --output text)
+echo "[rds] Endpoint: $DB_HOST"
+
+# ----------------------------------------------------------------------- EC2
+if [[ -z "${INSTANCE_ID:-}" ]]; then
+  USERDATA=$(mktemp)
+  {
+    echo '#!/bin/bash'
+    echo 'set -eux'
+    echo 'dnf install -y python3-pip mariadb105'
+    echo 'pip3 install flask pymysql'
+    echo 'mkdir -p /opt/loans'
+    echo "cat > /etc/loans.env <<'ENV'"
+    echo "DB_HOST=$DB_HOST"
+    echo "DB_USER=admin"
+    echo "DB_PASSWORD=$DB_PASSWORD"
+    echo "DB_NAME=loansdb"
+    echo 'ENV'
+    echo 'chmod 600 /etc/loans.env'
+    echo "cat > /opt/loans/app.py <<'PY'"
+    cat app/app.py
+    echo 'PY'
+    cat <<'UNIT'
+cat > /etc/systemd/system/loans.service <<'SVC'
+[Unit]
+Description=API Peminjaman Alat
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/loans.env
+WorkingDirectory=/opt/loans
+ExecStart=/usr/bin/python3 /opt/loans/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVC
+systemctl daemon-reload
+systemctl enable --now loans
+UNIT
+  } > "$USERDATA"
+
+  echo "[ec2] Meluncurkan t3.micro (Amazon Linux 2023, LabInstanceProfile)"
+  save INSTANCE_ID "$(aws ec2 run-instances \
+    --image-id resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
+    --instance-type t3.micro \
+    --subnet-id "$PUB_SUBNET" \
+    --security-group-ids "$WEB_SG" \
+    --iam-instance-profile Name=LabInstanceProfile \
+    --user-data "file://$USERDATA" \
+    --tag-specifications "$(tag instance $P-web)" \
+    --query 'Instances[0].InstanceId' --output text)"
+  rm -f "$USERDATA"
+fi
+aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+
+API_URL="http://$PUBLIC_IP"
 echo "$API_URL" > .api_url
+echo "[ec2] Menunggu aplikasi siap di $API_URL ..."
+for _ in $(seq 1 60); do
+  if curl -sf "$API_URL/health" >/dev/null; then break; fi
+  sleep 10
+done
+curl -s "$API_URL/health"; echo
 echo
 echo "Selesai. Endpoint: $API_URL"
 echo "Lanjutkan dengan: bash scripts/smoke_test.sh"
